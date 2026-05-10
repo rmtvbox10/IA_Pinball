@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>IA Pinball - Senior Dev Version</title>
+<title>IA Pinball - Corrected</title>
 <style>
     html,body{height:100%;margin:0;background:#111;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;overflow:hidden;}
     canvas{background:#000;border:4px solid #0ff;box-shadow:0 0 20px #0ff;border-radius:8px;display:block;}
@@ -20,50 +20,47 @@
     const width = canvas.width;
     const height = canvas.height;
 
-    // === Game objects ===
+    // === Ball ===
     const ball = {
         x: width / 2,
-        y: height - 150,
-        radius: 8,
+        y: 50, // start near top
+        radius: 6,
         vx: 0,
         vy: 0,
         color: '#ff0',
-        glow: 8
+        glow: 6
+    };
+    const gravity = 0.18;
+    const friction = 0.99;
+    const restitution = 0.85; // bounce off walls
+
+    // === Flippers ===
+    const flipperWidth = 90;
+    const flipperHeight = 10;
+    const flipperGap = 30; // distance from center to inner edge
+    const baseY = height - 30;
+
+    const leftFlipper = {
+        pivotX: width/2 - flipperGap,
+        pivotY: baseY,
+        length: flipperWidth,
+        angle: -20 * Math.PI/180, // rest: slightly down (negative angle)
+        targetAngle: -20 * Math.PI/180,
+        angularSpeed: 0,
+        color: '#ff0'
+    };
+    const rightFlipper = {
+        pivotX: width/2 + flipperGap,
+        pivotY: baseY,
+        length: flipperWidth,
+        angle: Math.PI + 20 * Math.PI/180, // rest: 180+20 = 200 deg (pointing down-left)
+        targetAngle: Math.PI + 20 * Math.PI/180,
+        angularSpeed: 0,
+        color: '#ff0'
     };
 
-    const gravity = 0.15;
-    const friction = 0.995;
-    const restitution = 0.85; // wall bounce
-
-    // Paddles (flippers)
-    const flipper = {
-        width: 100,
-        height: 12,
-        gap: 30, // distance from center to inner edge
-        baseY: height - 40,
-        left: {
-            pivotX: width/2 - this.gap, // will set after
-            pivotY: height - 40,
-            angle: 0, // radians, 0 = horizontal pointing right
-            targetAngle: 0,
-            angularSpeed: 0,
-            color: '#ff0'
-        },
-        right: {
-            pivotX: width/2 + this.gap,
-            pivotY: height - 40,
-            angle: 0, // 0 = horizontal pointing left (we'll treat negative angle as up)
-            targetAngle: 0,
-            angularSpeed: 0,
-            color: '#ff0'
-        }
-    };
-    // fix left pivotX after gap defined
-    flipper.left.pivotX = width/2 - flipper.gap;
-    flipper.right.pivotX = width/2 + flipper.gap;
-
-    const maxAngle = 45 * Math.PI / 180; // 45 degrees
-    const accelAngle = 0.05; // radians per frame for smooth movement
+    const maxAngle = 20 * Math.PI/180; // 20 degrees swing
+    const maxAngSpeed = 0.3; // rad per frame
 
     // Input
     const keys = { ArrowLeft: false, ArrowRight: false };
@@ -83,54 +80,22 @@
         return Math.max(min, Math.min(max, v));
     }
 
-    // Rotate point around origin
-    function rotatePoint(px, py, cx, cy, angle) {
-        const s = Math.sin(angle);
-        const c = Math.cos(angle);
-        const nx = (px - cx) * c - (py - cy) * s + cx;
-        const ny = (px - cx) * s + (py - cy) * cy + cy; // Wait fix: should be +cy
-        // Actually correct formula:
-        // nx = cos * (px - cx) - sin * (py - cy) + cx
-        // ny = sin * (px - cx) + cos * (py - cy) + cy
-        return {
-            x: Math.cos(angle) * (px - cx) - Math.sin(angle) * (py - cy) + cx,
-            y: Math.sin(angle) * (px - cx) + Math.cos(angle) * (py - cy) + cy
-        };
+    // Get flipper tip given angle
+    function getTip(f) {
+        // angle 0 points to the right (positive x)
+        const tipX = f.pivotX + f.length * Math.cos(f.angle);
+        const tipY = f.pivotY + f.length * Math.sin(f.angle); // note: canvas y increases down
+        return {x: tipX, y: tipY};
     }
 
-    // Get paddle segment (world coordinates) given base pivot and angle
-    function getFlipperSegment(side) {
-        const f = flipper[side];
-        const length = flipper.width;
-        const angle = f.angle;
-        // For left paddle: angle positive rotates up from pointing right
-        // For right paddle: angle positive rotates up from pointing left? We'll treat angle as upward from horizontal.
-        // We'll compute tip relative to pivot: pointing initially to the right for left, to the left for right.
-        const dx = length * Math.cos(angle);
-        const dy = length * Math.sin(angle);
-        let tipX, tipY;
-        if (side === 'left') {
-            tipX = f.pivotX + dx;
-            tipY = f.pivotY - dy; // negative because angle up reduces y
-        } else {
-            // right paddle points left initially
-            tipX = f.pivotX - dx;
-            tipY = f.pivotY - dy;
-        }
-        return {
-            pivot: {x: f.pivotX, y: f.pivotY},
-            tip: {x: tipX, y: tipY},
-            nx: Math.sin(angle), // normal? We'll compute later
-            ny: -Math.cos(angle)
-        };
-    }
-
-    // Distance from point to segment, and closest point
+    // Distance from point (px,py) to segment (ax,ay)-(bx,by), returns {dist, closestPoint}
     function pointToSegmentDist(px, py, ax, ay, bx, by) {
         const dx = bx - ax;
         const dy = by - ay;
         const lenSq = dx*dx + dy*dy;
-        if (lenSq === 0) return {dist: Math.hypot(px-ax, py-ay), closest: {x:ax, y:ay}};
+        if (lenSq === 0) {
+            return {dist: Math.hypot(px-ax, py-ay), closest:{x:ax, y:ay}};
+        }
         const t = ((px-ax)*dx + (py-ay)*dy) / lenSq;
         const clampT = Math.max(0, Math.min(1, t));
         const projX = ax + clampT * dx;
@@ -141,7 +106,7 @@
         };
     }
 
-    // Reflect velocity vector off a surface with normal (nx, ny) (normalized)
+    // Reflect velocity (vx,vy) off surface with normal (nx,ny) (normalized)
     function reflect(vx, vy, nx, ny) {
         const dot = vx*nx + vy*ny;
         return {
@@ -150,42 +115,37 @@
         };
     }
 
-    // === Game loop functions ===
+    // === Game update ===
     function update() {
-        // --- Paddle input ---
-        const left = flipper.left;
-        const right = flipper.right;
-        // left paddle
+        // --- Flipper input & motion ---
+        const left = leftFlipper;
+        const right = rightFlipper;
+        // left
         if (keys.ArrowLeft) {
-            left.targetAngle = maxAngle;
+            left.targetAngle = maxAngle; // swing up to +20 deg
         } else {
-            left.targetAngle = 0;
+            left.targetAngle = -maxAngle; // rest: -20 deg
         }
-        // right paddle
+        // right
         if (keys.ArrowRight) {
-            right.targetAngle = maxAngle;
+            right.targetAngle = Math.PI - maxAngle; // 180-20 = 160 deg (up-left)
         } else {
-            right.targetAngle = 0;
+            right.targetAngle = Math.PI + maxAngle; // rest: 180+20 = 200 deg (down-left)
         }
-        // smooth angular movement
-        const maxAngSpeed = 0.2;
-        function updatePaddle(p) {
-            const diff = p.targetAngle - p.angle;
-            // simple spring-damper
-            p.angularSpeed += diff * 0.1 - p.angularSpeed * 0.3;
-            p.angularSpeed = clamp(p.angularSpeed, -maxAngSpeed, maxAngSpeed);
-            p.angle += p.angularSpeed;
+        // angular movement with spring-damper
+        function updateFlipper(f) {
+            const diff = f.targetAngle - f.angle;
+            f.angularSpeed += diff * 0.12 - f.angularSpeed * 0.25;
+            f.angularSpeed = clamp(f.angularSpeed, -maxAngSpeed, maxAngSpeed);
+            f.angle += f.angularSpeed;
         }
-        updatePaddle(left);
-        updatePaddle(right);
+        updateFlipper(left);
+        updateFlipper(right);
 
         // --- Ball physics ---
-        // gravity
         ball.vy += gravity;
-        // friction
         ball.vx *= friction;
         ball.vy *= friction;
-        // integrate
         ball.x += ball.vx;
         ball.y += ball.vy;
 
@@ -200,28 +160,26 @@
             ball.x = width - ball.radius;
             ball.vx = -Math.abs(ball.vx) * restitution;
         }
-        // top wall (flat for simplicity)
+        // top wall (flat)
         if (ball.y - ball.radius < 0) {
             ball.y = ball.radius;
             ball.vy = Math.abs(ball.vy) * restitution;
         }
-        // bottom abyss (below paddles)
+        // bottom abyss (below flippers)
         if (ball.y > height + 50) {
             resetBall();
         }
 
-        // --- Paddle collisions ---
-        const leftSeg = getFlipperSegment('left');
-        const rightSeg = getFlipperSegment('right');
-
-        function handlePaddleCollision(seg, side) {
+        // --- Flipper collisions ---
+        function handleFlipperCollision(f, side) {
+            const tip = getTip(f);
             const {dist, closest} = pointToSegmentDist(
                 ball.x, ball.y,
-                seg.pivot.x, seg.pivot.y,
-                seg.tip.x, seg.tip.y
+                f.pivotX, f.pivotY,
+                tip.x, tip.y
             );
             if (dist < ball.radius) {
-                // collision normal (pointing from segment to ball, normalized)
+                // collision normal (from segment to ball)
                 let nx = ball.x - closest.x;
                 let ny = ball.y - closest.y;
                 const len = Math.hypot(nx, ny);
@@ -231,45 +189,41 @@
                 const reflected = reflect(ball.vx, ball.vy, nx, ny);
                 ball.vx = reflected.x;
                 ball.vy = reflected.y;
-                // add paddle velocity if moving upward (negative vy in paddle tip?)
-                // compute paddle tip velocity due to rotation
-                // angular velocity = paddle.angularSpeed
-                // tip velocity = angularSpeed * length perpendicular to paddle
-                // we only add impulse if paddle moving toward ball (i.e., dot product of paddle tip velocity and normal > 0)
-                const paddle = flipper[side];
-                const tipVelMagnitude = paddle.angularSpeed * flipper.width; // approximate
-                // direction of tip movement: perpendicular to paddle, pointing "up" when angularSpeed>0
-                // For left paddle: when angle increasing, tip moves up-left? We'll approximate by adding some upward impulse.
-                const impulse = 0.3; // tweak
-                if (paddle.angularSpeed > 0) {
-                    ball.vy -= impulse; // upward kick
-                    // also add some horizontal based on side
-                    ball.vx += (side === 'left' ? -impulse : impulse);
+                // impulse if flipper moving toward ball (approximate: angularSpeed > 0 means tip moving upward)
+                // we add a kick in the direction of normal (upward from surface)
+                const impulse = 0.4;
+                if (f.angularSpeed > 0) {
+                    ball.vx -= impulse * nx;
+                    ball.vy -= impulse * ny;
                 }
-                // slight bounce boost
-                ball.vx *= 1.1;
-                ball.vy *= 1.1;
-                // add score
-                score += 5;
+                // slight energy boost
+                ball.vx *= 1.05;
+                ball.vy *= 1.05;
+                // score
+                score += 10;
                 scoreEl.textContent = `Puntuación: ${score}`;
             }
         }
-        handlePaddleCollision(leftSeg, 'left');
-        handlePaddleCollision(rightSeg, 'right');
+        handleFlipperCollision(leftFlipper, 'left');
+        handleFlipperCollision(rightFlipper, 'right');
     }
 
     function resetBall() {
         ball.x = width / 2;
-        ball.y = height - 150;
+        ball.y = 50;
+        // random initial push
         ball.vx = (Math.random() - 0.5) * 4;
-        ball.vy = -6;
+        ball.vy = 2; // initial downward? Actually we want it to fall, so positive vy
+        // But we want it to start moving down due to gravity, so set small negative vy? Let's set slight upward to make it interesting.
+        ball.vy = -2;
     }
 
+    // === Draw ===
     function draw() {
         // clear
         ctx.fillStyle = '#111';
         ctx.fillRect(0,0,width,height);
-        // outer glow
+        // outer neon glow
         ctx.save();
         ctx.shadowColor = '#0ff';
         ctx.shadowBlur = 20;
@@ -278,7 +232,7 @@
         ctx.strokeRect(0,0,width,height);
         ctx.restore();
 
-        // draw walls (simple lines)
+        // draw walls (simple)
         ctx.strokeStyle = '#555';
         ctx.lineWidth = 2;
         // left wall
@@ -291,12 +245,12 @@
         ctx.moveTo(width,0);
         ctx.lineTo(width,height);
         ctx.stroke();
-        // top arc approximated by a few lines
+        // top arc (semicircle at y=0)
         ctx.beginPath();
-        const arcRadius = 180;
+        const arcRadius = 160;
         const arcCenterX = width/2;
-        const arcCenterY = 60;
-        const points = 16;
+        const arcCenterY = -30; // slightly above so arc visible inside
+        const points = 20;
         for (let i=0;i<=points;i++) {
             const angle = Math.PI * (i/points); // 0 to pi
             const x = arcCenterX + arcRadius * Math.cos(angle);
@@ -306,25 +260,25 @@
         }
         ctx.stroke();
 
-        // draw paddles
-        ctx.lineWidth = flipper.height;
+        // draw flippers
+        ctx.lineWidth = flipperHeight;
         ctx.lineCap = 'round';
-        // left paddle
+        // left flipper
         ctx.beginPath();
-        ctx.strokeStyle = flipper.left.color;
-        ctx.shadowColor = flipper.left.color;
-        ctx.shadowBlur = 10;
-        ctx.moveTo(flipper.left.pivotX, flipper.left.pivotY);
-        const leftTip = rotatePoint(flipper.left.pivotX + flipper.width, flipper.left.pivotY, flipper.left.pivotX, flipper.left.pivotY, flipper.left.angle);
+        ctx.strokeStyle = leftFlipper.color;
+        ctx.shadowColor = leftFlipper.color;
+        ctx.shadowBlur = 8;
+        ctx.moveTo(leftFlipper.pivotX, leftFlipper.pivotY);
+        const leftTip = getTip(leftFlipper);
         ctx.lineTo(leftTip.x, leftTip.y);
         ctx.stroke();
-        // right paddle
+        // right flipper
         ctx.beginPath();
-        ctx.strokeStyle = flipper.right.color;
-        ctx.shadowColor = flipper.right.color;
-        ctx.shadowBlur = 10;
-        ctx.moveTo(flipper.right.pivotX, flipper.right.pivotY);
-        const rightTip = rotatePoint(flipper.right.pivotX - flipper.width, flipper.right.pivotY, flipper.right.pivotX, flipper.right.pivotY, flipper.right.angle);
+        ctx.strokeStyle = rightFlipper.color;
+        ctx.shadowColor = rightFlipper.color;
+        ctx.shadowBlur = 8;
+        ctx.moveTo(rightFlipper.pivotX, rightFlipper.pivotY);
+        const rightTip = getTip(rightFlipper);
         ctx.lineTo(rightTip.x, rightTip.y);
         ctx.stroke();
 
@@ -333,7 +287,7 @@
         ctx.translate(ball.x, ball.y);
         const gradient = ctx.createRadialGradient(0,0,0,0,0,ball.radius);
         gradient.addColorStop(0, '#ffff00');
-        gradient.addColorStop(0.7, '#ffcc00');
+        gradient.addColorStop(0.6, '#ffcc00');
         gradient.addColorStop(1, '#ff9900');
         ctx.fillStyle = gradient;
         ctx.shadowColor = '#ff0';
