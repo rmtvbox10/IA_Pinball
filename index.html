@@ -1,18 +1,237 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-    <meta charset="UTF-8">
-    <title>IA Pinball</title>
-    <link rel="stylesheet" href="style.css">
+<meta charset="UTF-8">
+<title>IA Pinball - Retro Arcade</title>
+<style>
+    html,body{height:100%;margin:0;background:#111;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;}
+    canvas{background:#000;border:4px solid #0ff;box-shadow:0 0 20px #0ff;border-radius:8px;display:block;}
+    #score{position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:1.5rem;letter-spacing:2px;text-shadow:0 0 5px #0ff;}
+</style>
 </head>
 <body>
-    <div class="container">
-        <h1>IA Pinball</h1>
-        <canvas id="pinballCanvas" width="400" height="600"></canvas>
-        <div class="controls">
-            <p>Usa las flechas izquierda y derecha para controlar las paletas</p>
-        </div>
-    </div>
-    <script src="script.js"></script>
+<canvas id="pinballCanvas" width="400" height="600"></canvas>
+<div id="score">Puntuación: 0</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/matter-js/0.19.0/matter.min.js"></script>
+<script>
+(() => {
+    const canvas = document.getElementById('pinballCanvas');
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Matter.js setup
+    const Engine = Matter.Engine,
+          Render = Matter.Render,
+          World = Matter.World,
+          Bodies = Matter.Bodies,
+          Body = Matter.Body,
+          Composites = Matter.Composites,
+          Constraint = Matter.Constraint,
+          Common = Matter.Common;
+
+    const engine = Engine.create({ gravity: { y: 0.5 } });
+    const world = engine.world;
+
+    // Walls
+    const wallThickness = 8;
+    const leftWall = Bodies.rectangle(-wallThickness/2, height/2, wallThickness, height, { isStatic: true, restitution: 0.8, render: { visible: false } });
+    const rightWall = Bodies.rectangle(width + wallThickness/2, height/2, wallThickness, height, { isStatic: true, restitution: 0.8, render: { visible: false } });
+    // Top arc approximated by many points
+    const arcRadius = 180;
+    const arcCenterX = width/2;
+    const arcCenterY = 80; // top of arc
+    const arcPoints = [];
+    const arcSegments = 20;
+    for (let i = 0; i <= arcSegments; i++) {
+        const angle = Math.PI * (i / arcSegments); // 0 to pi
+        const x = arcCenterX + arcRadius * Math.cos(angle);
+        const y = arcCenterY + arcRadius * Math.sin(angle);
+        arcPoints.push({ x, y });
+    }
+    const topWall = Bodies.fromVertices(arcCenterX, arcCenterY, [arcPoints], { isStatic: true, restitution: 0.8, render: { visible: false } });
+    // Bottom loss zone (sensor)
+    const lossZone = Bodies.rectangle(width/2, height + 20, width, 40, { isStatic: true, isSensor: true, render: { visible: false } });
+
+    World.add(world, [leftWall, rightWall, topWall, lossZone]);
+
+    // Flippers
+    const flipperWidth = 80;
+    const flipperHeight = 12;
+    const flipperGap = 30; // distance from center to inner edge
+    const flipperY = height - 40;
+
+    // Left flipper (pivot at left side)
+    const leftFlipper = Bodies.rectangle(width/2 - flipperGap - flipperWidth/2, flipperY, flipperWidth, flipperHeight, { 
+        isStatic: false, 
+        restitution: 0.5, 
+        angle: 0,
+        render: { fillStyle: '#ff0' } 
+    });
+    // Right flipper (pivot at right side)
+    const rightFlipper = Bodies.rectangle(width/2 + flipperGap + flipperWidth/2, flipperY, flipperWidth, flipperHeight, { 
+        isStatic: false, 
+        restitution: 0.5, 
+        angle: 0,
+        render: { fillStyle: '#ff0' } 
+    });
+
+    // Create static anchors for pivot
+    const leftAnchor = Bodies.circle(width/2 - flipperGap, flipperY, 2, { isStatic: true, render: { visible: false } });
+    const rightAnchor = Bodies.circle(width/2 + flipperGap, flipperY, 2, { isStatic: true, render: { visible: false } });
+
+    // Revolute constraints (allow rotation)
+    const leftConstraint = Constraint.create({
+        bodyA: leftAnchor,
+        bodyB: leftFlipper,
+        pointA: { x: 0, y: 0 },
+        pointB: { x: -flipperWidth/2, y: 0 }, // attach at left end of flipper
+        stiffness: 0.8,
+        angularStiffness: 0,
+        enableMotor: true,
+        motorSpeed: 0,
+        maxMotorTorque: 0.1
+    });
+    const rightConstraint = Constraint.create({
+        bodyA: rightAnchor,
+        bodyB: rightFlipper,
+        pointA: { x: 0, y: 0 },
+        pointB: { x: flipperWidth/2, y: 0 }, // attach at right end
+        stiffness: 0.8,
+        angularStiffness: 0,
+        enableMotor: true,
+        motorSpeed: 0,
+        maxMotorTorque: 0.1
+    });
+
+    World.add(world, [leftFlipper, rightFlipper, leftAnchor, rightAnchor, leftConstraint, rightConstraint]);
+
+    // Ball
+    const ballRadius = 10;
+    const ball = Bodies.circle(width/2, height - 150, ballRadius, { 
+        restitution: 0.9,
+        frictionAir: 0.02,
+        density: 0.004,
+        render: { 
+            fillStyle: '#fff',
+            sprite: { texture: '', xScale: 1, yScale: 1 } 
+        } 
+    });
+    World.add(world, ball);
+
+    // Score
+    let score = 0;
+    const scoreEl = document.getElementById('score');
+
+    // Collision detection for scoring (when ball hits walls)
+    Matter.Events.on(engine, 'collisionStart', function(event) {
+        const pairs = event.pairs;
+        pairs.forEach(pair => {
+            const {bodyA, bodyB} = pair;
+            if ((bodyA === ball && (bodyB === leftWall || bodyB === rightWall || bodyB === topWall)) ||
+                (bodyB === ball && (bodyA === leftWall || bodyA === rightWall || bodyA === topWall))) {
+                score += 10;
+                scoreEl.textContent = `Puntuación: ${score}`;
+            }
+        });
+    });
+
+    // Input
+    const leftPressed = {value: false};
+    const rightPressed = {value: false};
+    window.addEventListener('keydown', e => {
+        if (e.key === 'ArrowLeft') leftPressed.value = true;
+        if (e.key === 'ArrowRight') rightPressed.value = true;
+    });
+    window.addEventListener('keyup', e => {
+        if (e.key === 'ArrowLeft') leftPressed.value = false;
+        if (e.key === 'ArrowRight') rightPressed.value = false;
+    });
+
+    // Game loop
+    const run = () => {
+        // Update flipper motor speeds based on input
+        const targetSpeed = 6; // radians per second approx
+        if (leftPressed.value) {
+            leftConstraint.motorSpeed = targetSpeed;
+        } else {
+            leftConstraint.motorSpeed = -targetSpeed; // return
+        }
+        if (rightPressed.value) {
+            rightConstraint.motorSpeed = -targetSpeed; // note: right flipper mirrors
+        } else {
+            rightConstraint.motorSpeed = targetSpeed;
+        }
+
+        // Step physics
+        Engine.update(engine, 1000/60);
+
+        // Clear
+        ctx.fillStyle = '#111';
+        ctx.fillRect(0,0,width,height);
+        // Neon border effect via glow: draw multiple times with increasing blur? We'll just draw a simple neon rect via stroke.
+        ctx.strokeStyle = '#0ff';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(0,0,width,height);
+
+        // Draw walls (just for visualization, we can draw them as lines)
+        ctx.strokeStyle = '#555';
+        ctx.lineWidth = 2;
+        // left wall
+        ctx.beginPath();
+        ctx.rect(-wallThickness/2, 0, wallThickness, height);
+        ctx.stroke();
+        // right wall
+        ctx.beginPath();
+        ctx.rect(width+wallThickness/2, 0, wallThickness, height);
+        ctx.stroke();
+        // top arc
+        ctx.beginPath();
+        ctx.arc(arcCenterX, arcCenterY, arcRadius, Math.PI, 0, false); // from left to right? Actually arc from left to right via bottom? We'll draw top semicircle from left to right using angles 0 to PI.
+        ctx.stroke();
+
+        // Draw flippers
+        ctx.fillStyle = '#ff0';
+        // left flipper
+        ctx.save();
+        ctx.translate(leftFlipper.position.x, leftFlipper.position.y);
+        ctx.rotate(leftFlipper.angle);
+        ctx.fillRect(-flipperWidth/2, -flipperHeight/2, flipperWidth, flipperHeight);
+        ctx.restore();
+        // right flipper
+        ctx.save();
+        ctx.translate(rightFlipper.position.x, rightFlipper.position.y);
+        ctx.rotate(rightFlipper.angle);
+        ctx.fillRect(-flipperWidth/2, -flipperHeight/2, flipperWidth, flipperHeight);
+        ctx.restore();
+
+        // Draw ball with gradient
+        ctx.save();
+        ctx.translate(ball.position.x, ball.position.y);
+        const gradient = ctx.createRadialGradient(0,0,0,0,0,ballRadius);
+        gradient.addColorStop(0, '#ffff00');
+        gradient.addColorStop(0.5, '#ffcc00');
+        gradient.addColorStop(1, '#ff9900');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(0,0,ballRadius,0,Math.PI*2);
+        ctx.fill();
+        ctx.restore();
+
+        // Loss detection
+        if (ball.position.y > height + 50) {
+            // reset ball
+            Body.setPosition(ball, { x: width/2, y: height - 150 });
+            Body.setVelocity(ball, { x: (Math.random()-0.5)*4, y: -6 });
+            Body.setAngularVelocity(ball, 0);
+        }
+
+        requestAnimationFrame(run);
+    };
+
+    requestAnimationFrame(run);
+})();
+</script>
 </body>
 </html>
