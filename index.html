@@ -2,11 +2,11 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>IA Pinball - Fixed Flippers</title>
+<title>Pinball – Free‑Model Fix</title>
 <style>
-    html,body{height:100%;margin:0;background:#111;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;overflow:hidden;}
-    canvas{background:#000;border:4px solid #0ff;box-shadow:0 0 20px #0ff;border-radius:8px;display:block;}
-    #ui{position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:1.2rem;letter-spacing:1px;text-shadow:0 0 5px #0ff;}
+  html,body{height:100%;margin:0;background:#111;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;overflow:hidden;}
+  canvas{background:#000;border:4px solid #0ff;box-shadow:0 0 20px #0ff;border-radius:8px;display:block;}
+  #ui{position:absolute;top:10px;left:50%;transform:translateX(-50%);font-size:1.2rem;letter-spacing:1px;text-shadow:0 0 5px #0ff;}
 </style>
 </head>
 <body>
@@ -15,298 +15,341 @@
 
 <script>
 (() => {
-    const canvas = document.getElementById('pinballCanvas');
-    const ctx = canvas.getContext('2d');
-    const width = canvas.width;
-    const height = canvas.height;
+  const canvas = document.getElementById('pinballCanvas');
+  const ctx = canvas.getContext('2d');
+  const width  = canvas.width;
+  const height = canvas.height;
 
-    // === Ball ===
-    const ball = {
-        x: width / 2,
-        y: 50, // start near top
-        radius: 6,
-        vx: 0,
-        vy: 0,
-        color: '#ff0',
-        glow: 6
-    };
-    const gravity = 0.18;
-    const friction = 0.99;
-    const restitution = 0.85; // bounce off walls
+  /* ---------- Ball ---------- */
+  const ball = {
+    x: width / 2,
+    y: 50,
+    radius: 6,
+    vx: 0,
+    vy: 0,
+    color: '#ff0',
+    glow: 6
+  };
+  const gravity = 0.18;
+  const friction = 0.99;
+  const wallRestitution = 0.85; // bounce off static walls
 
-    // === Flippers ===
-    const flipperOffset = 80; // distance from center to pivot
-    const flipperLength = 70; // length of flipper
-    const flipperHeight = 10; // thickness
-    const baseY = height - 30; // vertical position of pivots
+  /* ---------- Flippers (Paddles) ---------- */
+  class Flipper {
+    /** @param {'left'|'right'} side */
+    constructor(side, opts = {}) {
+      this.side = side;
+      this.w = opts.width ?? 20;
+      this.h = opts.height ?? 80;
+      this.offsetY = opts.offsetY ?? 30; // distance from bottom
+      const baseAngle = opts.restAngleDeg ?? 22; // degrees
+      // left: negative angle (counter‑clockwise), right: positive angle
+      this.angle = (side === 'left' ? -baseAngle : baseAngle) * Math.PI / 180;
 
-    const leftFlipper = {
-        pivotX: width/2 - flipperOffset,
-        pivotY: baseY,
-        length: flipperLength,
-        angle: 20 * Math.PI/180, // rest: slightly down (positive angle)
-        targetAngle: 20 * Math.PI/180,
-        angularSpeed: 0,
-        color: '#ff0'
-    };
-    const rightFlipper = {
-        pivotX: width/2 + flipperOffset,
-        pivotY: baseY,
-        length: flipperLength,
-        angle: Math.PI + 20 * Math.PI/180, // rest: 180+20 = 200 deg (down-left)
-        targetAngle: Math.PI + 20 * Math.PI/180,
-        angularSpeed: 0,
-        color: '#ff0'
-    };
+      const margin = 0.02 * width; // 2% of canvas width as outer margin
+      if (side === 'left') {
+        this.x = margin + this.w / 2;
+      } else {
+        this.x = width - margin - this.w / 2;
+      }
+      this.y = height - this.offsetY - this.h / 2;
 
-    const maxAngle = 20 * Math.PI/180; // 20 degrees swing
-    const maxAngSpeed = 0.3; // rad per frame
-
-    // Input
-    const keys = { ArrowLeft: false, ArrowRight: false };
-    window.addEventListener('keydown', e => {
-        if (e.key in keys) keys[e.key] = true;
-    });
-    window.addEventListener('keyup', e => {
-        if (e.key in keys) keys[e.key] = false;
-    });
-
-    // Score
-    let score = 0;
-    const scoreEl = document.getElementById('ui');
-
-    // === Helper functions ===
-    function clamp(v, min, max) {
-        return Math.max(min, Math.min(max, v));
+      // axis‑aligned bounds (used for simple wall checks)
+      this.updateBounds();
     }
 
-    // Get flipper tip given angle
-    function getTip(f) {
-        // angle 0 points to the right (positive x)
-        const tipX = f.pivotX + f.length * Math.cos(f.angle);
-        const tipY = f.pivotY + f.length * Math.sin(f.angle); // note: canvas y increases down
-        return {x: tipX, y: tipY};
+    updateBounds() {
+      this.left   = this.x - this.w / 2;
+      this.right  = this.x + this.w / 2;
+      this.top    = this.y - this.h / 2;
+      this.bottom = this.y + this.h / 2;
     }
 
-    // Distance from point (px,py) to segment (ax,ay)-(bx,by), returns {dist, closestPoint}
-    function pointToSegmentDist(px, py, ax, ay, bx, by) {
-        const dx = bx - ax;
-        const dy = by - ay;
-        const lenSq = dx*dx + dy*dy;
-        if (lenSq === 0) {
-            return {dist: Math.hypot(px-ax, py-ay), closest:{x:ax, y:ay}};
-        }
-        const t = ((px-ax)*dx + (py-ay)*dy) / lenSq;
-        const clampT = Math.max(0, Math.min(1, t));
-        const projX = ax + clampT * dx;
-        const projY = ay + clampT * dy;
-        return {
-            dist: Math.hypot(px-projX, py-projY),
-            closest: {x:projX, y:projY}
-        };
+    /** Draw the flipper (rotated around its centre) */
+    draw(ctx) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.rotate(this.angle);
+      ctx.fillStyle = '#ff0';
+      ctx.fillRect(-this.w/2, -this.h/2, this.w, this.h);
+      ctx.restore();
     }
+  }
 
-    // Reflect velocity (vx,vy) off surface with normal (nx,ny) (normalized)
-    function reflect(vx, vy, nx, ny) {
+  const flipperOpts = {
+    width: 20,
+    height: 80,
+    offsetY: 30,
+    restAngleDeg: 22
+  };
+  const leftFlipper  = new Flipper('left',  flipperOpts);
+  const rightFlipper = new Flipper('right', flipperOpts);
+
+  /* ---------- Obstacles (Bumpers) ---------- */
+  function createObstacles(count = 8) {
+    const obs = [];
+    for (let i = 0; i < count; i++) {
+      // place in upper 60% of screen
+      const ox = Math.random() * (width - 40) + 20;
+      const oy = Math.random() * (height * 0.6) + 20;
+      const radius = 12 + Math.random() * 8; // 12‑20 px
+      const restitution = 1.15 + Math.random() * 0.2; // 1.15‑1.35 → speed boost
+      obs.push({x:ox, y:oy, radius, restitution});
+    }
+    return obs;
+  }
+  const obstacles = createObstacles(8);
+
+  /* ---------- Input ---------- */
+  const keys = { ArrowLeft: false, ArrowRight: false };
+  window.addEventListener('keydown', e => { if (e.key in keys) keys[e.key] = true; });
+  window.addEventListener('keyup',   e => { if (e.key in keys) keys[e.key] = false; });
+
+  /* ---------- Score ---------- */
+  let score = 0;
+  const scoreEl = document.getElementById('ui');
+
+  /* ---------- Helper Math ---------- */
+  function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+  function reflect(vx, vy, nx, ny) {
+    const dot = vx*nx + vy*ny;
+    return {x: vx - 2*dot*nx, y: vy - 2*dot*ny};
+  }
+  function pointToSegmentDist(px,py, ax,ay, bx,by) {
+    const dx = bx-ax, dy = by-ay, lenSq = dx*dx + dy*dy;
+    if (lenSq === 0) return {dist: Math.hypot(px-ax, py-ay), closest:{x:ax, y:ay}};
+    const t = ((px-ax)*dx + (py-ay)*dy) / lenSq;
+    const clampT = Math.max(0, Math.min(1, t));
+    const projX = ax + clampT*dx;
+    const projY = ay + clampT*dy;
+    return {
+      dist: Math.hypot(px-projX, py-projY),
+      closest: {x:projX, y:projY}
+    };
+  }
+
+  /* ---------- Flipper physics (spring‑damper) ---------- */
+  const maxAngle   = 20 * Math.PI/180;   // 20° swing
+  const maxAngSpeed= 0.3;                // rad/frame
+  function updateFlipper(f) {
+    const target = (() => {
+      if (f.side === 'left') {
+        return keys.ArrowLeft ? -maxAngle : maxAngle;
+      } else {
+        return keys.ArrowRight ? Math.PI - maxAngle : Math.PI + maxAngle;
+      }
+    })();
+    const diff = target - f.angle;
+    f.angularSpeed += diff*0.12 - f.angularSpeed*0.25;
+    f.angularSpeed = clamp(f.angularSpeed, -maxAngSpeed, maxAngSpeed);
+    f.angle += f.angularSpeed;
+  }
+
+  /* ---------- Bottom / Drain logic ---------- */
+  function handleBottom() {
+    const {x:bx, y:by, radius:r} = ball;
+    if (by + r > height) { // passed bottom of canvas
+      if (bx < leftFlipper.left) {
+        // hit left solid wall
+        ball.vx = Math.abs(ball.vx) * wallRestitution;
+        ball.x = leftFlipper.left - r;
+        return 'wall';
+      }
+      if (bx > rightFlipper.right) {
+        // hit right solid wall
+        ball.vx = -Math.abs(ball.vx) * wallRestitution;
+        ball.x = rightFlipper.right + r;
+        return 'wall';
+      }
+      // central gap → lose life
+      return 'drain';
+    }
+    return null;
+  }
+
+  /* ---------- Obstacle collision ---------- */
+  function handleObstacles() {
+    const {x:bx, y:by, radius:r, vx, vy} = ball;
+    for (const o of obstacles) {
+      const dx = bx - o.x, dy = by - o.y;
+      const dist = Math.hypot(dx, dy);
+      if (dist < r + o.radius) {
+        // normal
+        const nx = dx/dist, ny = dy/dist;
         const dot = vx*nx + vy*ny;
-        return {
-            x: vx - 2 * dot * nx,
-            y: vy - 2 * dot * ny
-        };
+        // reflect
+        ball.vx = vx - 2*dot*nx;
+        ball.vy = vy - 2*dot*ny;
+        // apply restitution (speed boost)
+        ball.vx *= o.restitution;
+        ball.vy *= o.restitution;
+        // nudge out of overlap
+        const overlap = r + o.radius - dist;
+        ball.x += nx * overlap * 0.5;
+        ball.y += ny * overlap * 0.5;
+        break; // one obstacle per frame is enough
+      }
+    }
+  }
+
+  /* ---------- Flipper collision ---------- */
+  function getTip(f) {
+    return {
+      x: f.pivotX + f.length * Math.cos(f.angle),
+      y: f.pivotY + f.length * Math.sin(f.angle)
+    };
+  }
+  function handleFlipperCollision(f) {
+    const tip = getTip(f);
+    const {dist, closest} = pointToSegmentDist(
+      ball.x, ball.y,
+      f.pivotX, f.pivotY,
+      tip.x, tip.y
+    );
+    if (dist < ball.radius) {
+      let nx = ball.x - closest.x;
+      let ny = ball.y - closest.y;
+      const len = Math.hypot(nx, ny);
+      if (len === 0) return;
+      nx /= len; ny /= len;
+      const reflected = reflect(ball.vx, ball.vy, nx, ny);
+      ball.vx = reflected.x;
+      ball.vy = reflected.y;
+      // impulse when flipper moving
+      if (Math.abs(f.angularSpeed) > 0.01) {
+        const impulse = 0.4;
+        ball.vx -= impulse * nx;
+        ball.vy -= impulse * ny;
+      }
+      // small energy boost
+      ball.vx *= 1.05;
+      ball.vy *= 1.05;
+      score += 10;
+      scoreEl.textContent = `Puntuación: ${score}`;
+    }
+  }
+
+  /* ---------- Ball reset ---------- */
+  function resetBall() {
+    ball.x = width / 2;
+    ball.y = 50;
+    ball.vx = (Math.random() - 0.5) * 4;
+    ball.vy = 2; // slight downward start
+  }
+
+  /* ---------- Main loop ---------- */
+  function loop() {
+    // flipper physics
+    updateFlipper(leftFlipper);
+    updateFlipper(rightFlipper);
+
+    // ball physics
+    ball.vy += gravity;
+    ball.vx *= friction;
+    ball.vy *= friction;
+    ball.x += ball.vx;
+    ball.y += ball.vy;
+
+    // wall collisions (left/right/top)
+    if (ball.x - ball.radius < 0) {
+      ball.x = ball.radius;
+      ball.vx = Math.abs(ball.vx) * wallRestitution;
+    }
+    if (ball.x + ball.radius > width) {
+      ball.x = width - ball.radius;
+      ball.vx = -Math.abs(ball.vx) * wallRestitution;
+    }
+    if (ball.y - ball.radius < 0) {
+      ball.y = ball.radius;
+      ball.vy = Math.abs(ball.vy) * wallRestitution;
     }
 
-    // === Game update ===
-    function update() {
-        // --- Flipper input & motion ---
-        const left = leftFlipper;
-        const right = rightFlipper;
-        // left
-        if (keys.ArrowLeft) {
-            left.targetAngle = -maxAngle; // swing up: -20 deg (up-right)
-        } else {
-            left.targetAngle = maxAngle; // rest: +20 deg (down-right)
-        }
-        // right
-        if (keys.ArrowRight) {
-            right.targetAngle = Math.PI - maxAngle; // 180-20 = 160 deg (up-left)
-        } else {
-            right.targetAngle = Math.PI + maxAngle; // rest: 180+20 = 200 deg (down-left)
-        }
-        // angular movement with spring-damper
-        function updateFlipper(f) {
-            const diff = f.targetAngle - f.angle;
-            f.angularSpeed += diff * 0.12 - f.angularSpeed * 0.25;
-            f.angularSpeed = clamp(f.angularSpeed, -maxAngSpeed, maxAngSpeed);
-            f.angle += f.angularSpeed;
-        }
-        updateFlipper(left);
-        updateFlipper(right);
+    // bottom / drain
+    const bottomRes = handleBottom();
+    if (bottomRes === 'drain') {
+      resetBall();
+    } // wall bounces already handled inside handleBottom()
 
-        // --- Ball physics ---
-        ball.vy += gravity;
-        ball.vx *= friction;
-        ball.vy *= friction;
-        ball.x += ball.vx;
-        ball.y += ball.vy;
+    // obstacles
+    handleObstacles();
 
-        // --- Wall collisions ---
-        // left wall
-        if (ball.x - ball.radius < 0) {
-            ball.x = ball.radius;
-            ball.vx = Math.abs(ball.vx) * restitution;
-        }
-        // right wall
-        if (ball.x + ball.radius > width) {
-            ball.x = width - ball.radius;
-            ball.vx = -Math.abs(ball.vx) * restitution;
-        }
-        // top wall (flat)
-        if (ball.y - ball.radius < 0) {
-            ball.y = ball.radius;
-            ball.vy = Math.abs(ball.vy) * restitution;
-        }
-        // bottom abyss (below flippers)
-        if (ball.y > height + 50) {
-            resetBall();
-        }
+    // flipper collision
+    handleFlipperCollision(leftFlipper);
+    handleFlipperCollision(rightFlipper);
 
-        // --- Flipper collisions ---
-        function handleFlipperCollision(f, side) {
-            const tip = getTip(f);
-            const {dist, closest} = pointToSegmentDist(
-                ball.x, ball.y,
-                f.pivotX, f.pivotY,
-                tip.x, tip.y
-            );
-            if (dist < ball.radius) {
-                // collision normal (from segment to ball)
-                let nx = ball.x - closest.x;
-                let ny = ball.y - closest.y;
-                const len = Math.hypot(nx, ny);
-                if (len === 0) return;
-                nx /= len; ny /= len;
-                // reflect velocity
-                const reflected = reflect(ball.vx, ball.vy, nx, ny);
-                ball.vx = reflected.x;
-                ball.vy = reflected.y;
-                // impulse if flipper moving toward ball (approximate: angularSpeed > 0 means tip moving in direction of increasing angle)
-                // For left flipper: increasing angle (positive) moves tip down-right; we want upward impulse when moving toward ball (i.e., when angularSpeed < 0? Let's just add impulse when angularSpeed != 0 and dot product of tip velocity and normal > 0)
-                // Simpler: add a kick upward along normal when flipper is moving (angularSpeed != 0)
-                const impulse = 0.4;
-                if (Math.abs(f.angularSpeed) > 0.01) {
-                    ball.vx -= impulse * nx;
-                    ball.vy -= impulse * ny;
-                }
-                // slight energy boost
-                ball.vx *= 1.05;
-                ball.vy *= 1.05;
-                // score
-                score += 10;
-                scoreEl.textContent = `Puntuación: ${score}`;
-            }
-        }
-        handleFlipperCollision(leftFlipper, 'left');
-        handleFlipperCollision(rightFlipper, 'right');
+    // ----- Rendering -----
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0,0,width,height);
+    // outer neon glow
+    ctx.save();
+    ctx.shadowColor = '#0ff';
+    ctx.shadowBlur = 20;
+    ctx.strokeStyle = '#0ff';
+    ctx.lineWidth = 4;
+    ctx.strokeRect(0,0,width,height);
+    ctx.restore();
+
+    // simple walls (visual)
+    ctx.strokeStyle = '#555';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(0,height); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(width,0); ctx.lineTo(width,height); ctx.stroke();
+    // top arc
+    ctx.beginPath();
+    const arcR = 160, arcCX = width/2, arcCY = -30;
+    const steps = 20;
+    for (let i=0;i<=steps;i++) {
+      const a = Math.PI * (i/steps);
+      const x = arcCX + arcR*Math.cos(a);
+      const y = arcCY + arcR*Math.sin(a);
+      if(i===0) ctx.moveTo(x,y);
+      else ctx.lineTo(x,y);
     }
+    ctx.stroke();
 
-    function resetBall() {
-        ball.x = width / 2;
-        ball.y = 50;
-        // random initial push
-        ball.vx = (Math.random() - 0.5) * 4;
-        ball.vy = 2; // initial downward? Actually we want it to fall due to gravity, so small positive vy or negative? We'll set slight downward.
-        ball.vy = 2;
-    }
+    // draw flippers
+    ctx.lineWidth = 10;
+    ctx.lineCap = 'round';
+    // left
+    ctx.beginPath(); ctx.strokeStyle = leftFlipper.color;
+    ctx.shadowColor = leftFlipper.color; ctx.shadowBlur = 8;
+    ctx.moveTo(leftFlipper.pivotX, leftFlipper.pivotY);
+    const lt = getTip(leftFlipper);
+    ctx.lineTo(lt.x, lt.y); ctx.stroke();
+    // right
+    ctx.beginPath(); ctx.strokeStyle = rightFlipper.color;
+    ctx.shadowColor = rightFlipper.color; ctx.shadowBlur = 8;
+    ctx.moveTo(rightFlipper.pivotX, rightFlipper.pivotY);
+    const rt = getTip(rightFlipper);
+    ctx.lineTo(rt.x, rt.y); ctx.stroke();
 
-    // === Draw ===
-    function draw() {
-        // clear
-        ctx.fillStyle = '#111';
-        ctx.fillRect(0,0,width,height);
-        // outer neon glow
-        ctx.save();
-        ctx.shadowColor = '#0ff';
-        ctx.shadowBlur = 20;
-        ctx.strokeStyle = '#0ff';
-        ctx.lineWidth = 4;
-        ctx.strokeRect(0,0,width,height);
-        ctx.restore();
+    // ball
+    ctx.save();
+    ctx.translate(ball.x, ball.y);
+    const grad = ctx.createRadialGradient(0,0,0,0,0,ball.radius);
+    grad.addColorStop(0, '#ffff00');
+    grad.addColorStop(0.6, '#ffcc00');
+    grad.addColorStop(1,  '#ff9900');
+    ctx.fillStyle = grad;
+    ctx.shadowColor = '#ff0';
+    ctx.shadowBlur = ball.glow;
+    ctx.beginPath(); ctx.arc(0,0,ball.radius,0,Math.PI*2); ctx.fill();
+    ctx.restore();
 
-        // draw walls (simple)
-        ctx.strokeStyle = '#555';
-        ctx.lineWidth = 2;
-        // left wall
-        ctx.beginPath();
-        ctx.moveTo(0,0);
-        ctx.lineTo(0,height);
-        ctx.stroke();
-        // right wall
-        ctx.beginPath();
-        ctx.moveTo(width,0);
-        ctx.lineTo(width,height);
-        ctx.stroke();
-        // top arc (semicircle at y=0)
-        ctx.beginPath();
-        const arcRadius = 160;
-        const arcCenterX = width/2;
-        const arcCenterY = -30; // slightly above so arc visible inside
-        const points = 20;
-        for (let i=0;i<=points;i++) {
-            const angle = Math.PI * (i/points); // 0 to pi
-            const x = arcCenterX + arcRadius * Math.cos(angle);
-            const y = arcCenterY + arcRadius * Math.sin(angle);
-            if (i===0) ctx.moveTo(x,y);
-            else ctx.lineTo(x,y);
-        }
-        ctx.stroke();
+    // obstacles
+    obstacles.forEach(o => {
+      ctx.beginPath();
+      ctx.arc(o.x, o.y, o.radius, 0, Math.PI*2);
+      ctx.fillStyle = '#f00';
+      ctx.fill();
+    });
 
-        // draw flippers
-        ctx.lineWidth = flipperHeight;
-        ctx.lineCap = 'round';
-        // left flipper
-        ctx.beginPath();
-        ctx.strokeStyle = leftFlipper.color;
-        ctx.shadowColor = leftFlipper.color;
-        ctx.shadowBlur = 8;
-        ctx.moveTo(leftFlipper.pivotX, leftFlipper.pivotY);
-        const leftTip = getTip(leftFlipper);
-        ctx.lineTo(leftTip.x, leftTip.y);
-        ctx.stroke();
-        // right flipper
-        ctx.beginPath();
-        ctx.strokeStyle = rightFlipper.color;
-        ctx.shadowColor = rightFlipper.color;
-        ctx.shadowBlur = 8;
-        ctx.moveTo(rightFlipper.pivotX, rightFlipper.pivotY);
-        const rightTip = getTip(rightFlipper);
-        ctx.lineTo(rightTip.x, rightTip.y);
-        ctx.stroke();
-
-        // draw ball with gradient
-        ctx.save();
-        ctx.translate(ball.x, ball.y);
-        const gradient = ctx.createRadialGradient(0,0,0,0,0,ball.radius);
-        gradient.addColorStop(0, '#ffff00');
-        gradient.addColorStop(0.6, '#ffcc00');
-        gradient.addColorStop(1, '#ff9900');
-        ctx.fillStyle = gradient;
-        ctx.shadowColor = '#ff0';
-        ctx.shadowBlur = ball.glow;
-        ctx.beginPath();
-        ctx.arc(0,0,ball.radius,0,Math.PI*2);
-        ctx.fill();
-        ctx.restore();
-    }
-
-    // === Main loop ===
-    function loop() {
-        update();
-        draw();
-        requestAnimationFrame(loop);
-    }
-
-    resetBall();
     requestAnimationFrame(loop);
+  }
+
+  // start
+  resetBall();
+  requestAnimationFrame(loop);
 })();
 </script>
 </body>
