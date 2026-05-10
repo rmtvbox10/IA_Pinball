@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<title>IA Pinball - Corrected</title>
+<title>IA Pinball - Fixed Flippers</title>
 <style>
     html,body{height:100%;margin:0;background:#111;display:flex;align-items:center;justify-content:center;font-family:sans-serif;color:#fff;overflow:hidden;}
     canvas{background:#000;border:4px solid #0ff;box-shadow:0 0 20px #0ff;border-radius:8px;display:block;}
@@ -35,25 +35,25 @@
     const restitution = 0.85; // bounce off walls
 
     // === Flippers ===
-    const flipperWidth = 90;
-    const flipperHeight = 10;
-    const flipperGap = 30; // distance from center to inner edge
-    const baseY = height - 30;
+    const flipperOffset = 80; // distance from center to pivot
+    const flipperLength = 70; // length of flipper
+    const flipperHeight = 10; // thickness
+    const baseY = height - 30; // vertical position of pivots
 
     const leftFlipper = {
-        pivotX: width/2 - flipperGap,
+        pivotX: width/2 - flipperOffset,
         pivotY: baseY,
-        length: flipperWidth,
-        angle: -20 * Math.PI/180, // rest: slightly down (negative angle)
-        targetAngle: -20 * Math.PI/180,
+        length: flipperLength,
+        angle: 20 * Math.PI/180, // rest: slightly down (positive angle)
+        targetAngle: 20 * Math.PI/180,
         angularSpeed: 0,
         color: '#ff0'
     };
     const rightFlipper = {
-        pivotX: width/2 + flipperGap,
+        pivotX: width/2 + flipperOffset,
         pivotY: baseY,
-        length: flipperWidth,
-        angle: Math.PI + 20 * Math.PI/180, // rest: 180+20 = 200 deg (pointing down-left)
+        length: flipperLength,
+        angle: Math.PI + 20 * Math.PI/180, // rest: 180+20 = 200 deg (down-left)
         targetAngle: Math.PI + 20 * Math.PI/180,
         angularSpeed: 0,
         color: '#ff0'
@@ -122,9 +122,9 @@
         const right = rightFlipper;
         // left
         if (keys.ArrowLeft) {
-            left.targetAngle = maxAngle; // swing up to +20 deg
+            left.targetAngle = -maxAngle; // swing up: -20 deg (up-right)
         } else {
-            left.targetAngle = -maxAngle; // rest: -20 deg
+            left.targetAngle = maxAngle; // rest: +20 deg (down-right)
         }
         // right
         if (keys.ArrowRight) {
@@ -189,10 +189,11 @@
                 const reflected = reflect(ball.vx, ball.vy, nx, ny);
                 ball.vx = reflected.x;
                 ball.vy = reflected.y;
-                // impulse if flipper moving toward ball (approximate: angularSpeed > 0 means tip moving upward)
-                // we add a kick in the direction of normal (upward from surface)
+                // impulse if flipper moving toward ball (approximate: angularSpeed > 0 means tip moving in direction of increasing angle)
+                // For left flipper: increasing angle (positive) moves tip down-right; we want upward impulse when moving toward ball (i.e., when angularSpeed < 0? Let's just add impulse when angularSpeed != 0 and dot product of tip velocity and normal > 0)
+                // Simpler: add a kick upward along normal when flipper is moving (angularSpeed != 0)
                 const impulse = 0.4;
-                if (f.angularSpeed > 0) {
+                if (Math.abs(f.angularSpeed) > 0.01) {
                     ball.vx -= impulse * nx;
                     ball.vy -= impulse * ny;
                 }
@@ -213,9 +214,8 @@
         ball.y = 50;
         // random initial push
         ball.vx = (Math.random() - 0.5) * 4;
-        ball.vy = 2; // initial downward? Actually we want it to fall, so positive vy
-        // But we want it to start moving down due to gravity, so set small negative vy? Let's set slight upward to make it interesting.
-        ball.vy = -2;
+        ball.vy = 2; // initial downward? Actually we want it to fall due to gravity, so small positive vy or negative? We'll set slight downward.
+        ball.vy = 2;
     }
 
     // === Draw ===
